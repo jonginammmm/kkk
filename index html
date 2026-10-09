@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#030914">
+<title>3D Realist Qish va Izg'irin Shamol</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;background:#030914}
+body{font-family:Arial,sans-serif;user-select:none;-webkit-tap-highlight-color:transparent}
+#world{position:fixed;inset:-25px;overflow:hidden}
+#forest{
+ position:absolute;inset:-30px;
+ background-image:
+ linear-gradient(180deg,rgba(3,9,20,.40),rgba(5,14,28,.20) 45%,rgba(2,5,12,.65)),
+ url("https://images.unsplash.com/photo-1483921020237-2ff51e8e4b22?auto=format&fit=crop&w=2000&q=90");
+ background-position:center;background-size:cover;
+ transform:scale(1.1);
+ transition:transform 0.1s linear;
+ will-change:transform;
+}
+#webgl-canvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+#vignette{
+ position:absolute;inset:0;pointer-events:none;
+ background:linear-gradient(180deg,rgba(2,6,15,.55),transparent 25%,transparent 65%,rgba(1,4,10,.75)),
+ radial-gradient(ellipse at center,transparent 25%,rgba(1,4,8,.50) 100%);
+}
+.top{
+ position:absolute;z-index:5;top:calc(env(safe-area-inset-top) + 15px);
+ left:0;right:0;display:flex;justify-content:flex-end;gap:10px;padding:0 17px
+}
+.control{
+ width:49px;height:49px;border-radius:50%;
+ border:1px solid rgba(255,255,255,.30);
+ background:rgba(10,20,35,.40);color:white;
+ display:grid;place-items:center;
+ backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+ box-shadow:0 7px 28px #0004,inset 0 1px #ffffff20;
+ cursor:pointer
+}
+.control:active{transform:scale(.92)}
+.control svg{width:22px;height:22px;stroke:white;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+#play{
+ position:absolute;z-index:6;left:50%;top:50%;transform:translate(-50%,-50%);
+ width:75px;height:75px;border-radius:50%;display:grid;place-items:center;
+ border:1px solid rgba(255,255,255,.6);background:rgba(15,30,50,.55);color:white;
+ backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
+ box-shadow:0 0 0 12px rgba(255,255,255,.05),0 10px 35px #0008;
+ transition:opacity .7s,transform .3s;cursor:pointer
+}
+#play svg{width:30px;height:30px;stroke:white;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+#play.hidden{opacity:0;pointer-events:none;transform:translate(-50%,-50%) scale(.8)}
+#hint{
+ position:absolute;z-index:5;bottom:calc(env(safe-area-inset-bottom) + 23px);
+ left:50%;transform:translateX(-50%);white-space:nowrap;
+ padding:11px 18px;border-radius:25px;
+ color:#ffffffdb;font-size:12px;letter-spacing:.3px;
+ background:rgba(8,16,28,.50);border:1px solid rgba(255,255,255,.20);
+ backdrop-filter:blur(13px);-webkit-backdrop-filter:blur(13px);
+ text-shadow:0 2px 8px #000;transition:opacity 2s
+}
+#hint.dim{opacity:.45}
+</style>
+<!-- Three.js 3D Engine -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+<div id="world">
+ <div id="forest"></div>
+ <canvas id="webgl-canvas"></canvas>
+ <div id="vignette"></div>
+</div>
+
+<div class="top">
+ <button class="control" id="down" aria-label="Ovozni pasaytirish">
+  <svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M16 9l5 6"/></svg>
+ </button>
+ <button class="control" id="up" aria-label="Ovozni balandlatish">
+  <svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15 9a5 5 0 0 1 0 6"/><path d="M18 6a9 9 0 0 1 0 12"/></svg>
+ </button>
+</div>
+
+<button id="play" aria-label="Bo'ron va qor ovozini yoqish">
+ <svg viewBox="0 0 24 24"><path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15 9a5 5 0 0 1 0 6"/><path d="M18 6a9 9 0 0 1 0 12"/></svg>
+</button>
+<div id="hint">Ovozni eshitish uchun tugmani bosing</div>
+
+<script>
+(() => {
+ const canvas = document.getElementById('webgl-canvas');
+ const play = document.getElementById('play');
+ const hint = document.getElementById('hint');
+ const forest = document.getElementById('forest');
+
+ let mainVolume = 0.5;
+ let running = false;
+
+ // --- Web Audio API (Haqiqiy Izg'irin va Bo'ron Sintetizatori) ---
+ let audioCtx, gainNode, filterNode, lfo;
+
+ function initProceduralWind() {
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+  // 1. Oq shovqin (White Noise) bufferini yaratish
+  const bufferSize = audioCtx.sampleRate * 2;
+  const noiseBuffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const output = noiseBuffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) {
+   output[i] = Math.random() * 2 - 1;
+  }
+
+  const whiteNoise = audioCtx.createBufferSource();
+  whiteNoise.buffer = noiseBuffer;
+  whiteNoise.loop = true;
+
+  // 2. Shamolning guvillagan past chastotasini o'tkazish uchun Lowpass filter
+  filterNode = audioCtx.createBiquadFilter();
+  filterNode.type = 'lowpass';
+  filterNode.frequency.value = 220; // Guvillash chastotasi
+
+  // 3. Shamol eshib-tinchlanishi uchun LFO (Oscillator)
+  lfo = audioCtx.createOscillator();
+  lfo.frequency.value = 0.15; // Shamol sur'ati
+  const lfoGain = audioCtx.createGain();
+  lfoGain.gain.value = 180; // Shamol kuchi va uvillashi
+
+  lfo.connect(lfoGain);
+  lfoGain.connect(filterNode.frequency);
+
+  // 4. Umumiy Ovoz balandligi
+  gainNode = audioCtx.createGain();
+  gainNode.gain.value = mainVolume;
+
+  whiteNoise.connect(filterNode);
+  filterNode.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+
+  whiteNoise.start();
+  lfo.start();
+ }
+
+ // --- Three.js 3D Sahna ---
+ const scene = new THREE.Scene();
+ const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 1000);
+ camera.position.z = 400;
+
+ const renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true });
+ renderer.setSize(window.innerWidth, window.innerHeight);
+ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+ function createSnowTexture() {
+  const canvasTex = document.createElement('canvas');
+  canvasTex.width = 32; canvasTex.height = 32;
+  const ctx = canvasTex.getContext('2d');
+  const grad = ctx.createRadialGradient(16,16,0, 16,16,16);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.5, 'rgba(255,255,255,0.6)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = grad;
+  ctx.beginPath(); ctx.arc(16,16,16,0,Math.PI*2); ctx.fill();
+  return new THREE.CanvasTexture(canvasTex);
+ }
+
+ const count = 1800;
+ const geometry = new THREE.BufferGeometry();
+ const positions = new Float32Array(count * 3);
+ const velocities = [];
+
+ for(let i = 0; i < count; i++) {
+  positions[i*3] = (Math.random() - 0.5) * 800;
+  positions[i*3+1] = (Math.random() - 0.5) * 800;
+  positions[i*3+2] = (Math.random() - 0.5) * 800;
+
+  velocities.push({
+   y: 1.2 + Math.random() * 2.2,
+   x: -0.8 - Math.random() * 1.5,
+   swingSpeed: 0.01 + Math.random() * 0.02,
+   swingStep: Math.random() * Math.PI * 2
+  });
+ }
+
+ geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+ const material = new THREE.PointsMaterial({
+  size: 5,
+  map: createSnowTexture(),
+  blending: THREE.AdditiveBlending,
+  transparent: true,
+  opacity: 0.85,
+  depthWrite: false
+ });
+
+ const snowflakeParticles = new THREE.Points(geometry, material);
+ scene.add(snowflakeParticles);
+
+ let windFactor = 0;
+ function animate() {
+  requestAnimationFrame(animate);
+
+  const pos = geometry.attributes.position.array;
+  for (let i = 0; i < count; i++) {
+   const v = velocities[i];
+   v.swingStep += v.swingSpeed;
+
+   pos[i*3+1] -= v.y;
+   pos[i*3] += v.x + Math.sin(v.swingStep) * 0.5 + windFactor;
+
+   if (pos[i*3+1] < -400) pos[i*3+1] = 400;
+   if (pos[i*3] < -400) pos[i*3] = 400;
+  }
+  geometry.attributes.position.needsUpdate = true;
+  renderer.render(scene, camera);
+ }
+ animate();
+
+ window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+ });
+
+ // --- Ovoz Boshqaruvi Tugmalari ---
+ async function startSound(){
+  if (!audioCtx) {
+   initProceduralWind();
+  } else if (audioCtx.state === 'suspended') {
+   await audioCtx.resume();
+  }
+  running = true;
+  play.classList.add('hidden');
+  hint.classList.remove('dim');
+  setTimeout(() => hint.classList.add('dim'), 5000);
+ }
+
+ play.addEventListener('click', startSound);
+
+ document.getElementById('up').addEventListener('click', () => {
+  mainVolume = Math.min(1, mainVolume + 0.1);
+  if (gainNode) gainNode.gain.value = mainVolume;
+  if (!running) startSound();
+ });
+
+ document.getElementById('down').addEventListener('click', () => {
+  mainVolume = Math.max(0, mainVolume - 0.1);
+  if (gainNode) gainNode.gain.value = mainVolume;
+ });
+
+ // --- Parallax & Gyroscope / Touch ---
+ let tx = 0, ty = 0;
+ function applyParallax(x, y) {
+  windFactor = x * 1.5;
+  camera.position.x = x * 40;
+  camera.position.y = -y * 30;
+  forest.style.transform = `scale(1.1) translate(${x * 15}px, ${y * 10}px)`;
+ }
+
+ window.addEventListener('deviceorientation', (e) => {
+  if (e.gamma == null || e.beta == null) return;
+  tx = Math.max(-1, Math.min(1, e.gamma / 30));
+  ty = Math.max(-1, Math.min(1, (e.beta - 30) / 40));
+  applyParallax(tx, ty);
+ }, { passive: true });
+
+ window.addEventListener('touchmove', (e) => {
+  if (!e.touches.length) return;
+  tx = ((e.touches[0].clientX / window.innerWidth) - 0.5) * 2;
+  ty = ((e.touches[0].clientY / window.innerHeight) - 0.5) * 2;
+  applyParallax(tx, ty);
+ }, { passive: true });
+
+})();
+</script>
+</body>
+</html>
